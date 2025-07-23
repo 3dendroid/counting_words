@@ -1,11 +1,14 @@
 import os
 import re
 import subprocess
+import warnings
+
+warnings.filterwarnings("ignore", category=UserWarning)
 
 import whisper
 
 # === Configurations ===
-VIDEO_FILE = "video.avi"
+VIDEO_FILE = "yesman.mkv"
 AUDIO_FILE = "audio.wav"
 SEGMENTS_FILE = "segments.txt"
 OUTPUT_DIR = "clips"
@@ -25,7 +28,6 @@ def extract_audio():
     print("✅ Audio saved as", AUDIO_FILE)
 
 
-# Format time to HH:MM:SS.MS
 def format_time(seconds):
     total_ms = int(seconds * 100)
     ms = total_ms % 100
@@ -36,10 +38,8 @@ def format_time(seconds):
     return f"{hours:02}:{minutes:02}:{seconds:02}.{ms:02}"
 
 
-# Transcribe audio and detect segments with the word
-# noinspection PyArgumentList
 def transcribe():
-    print(f"[2] Transcribing and detecting segments with word: {WORD}")
+    print(f"[2] Transcribing and detecting segments with word {WORD}")
     model = whisper.load_model("base")
     result = model.transcribe(AUDIO_FILE, language="ru")
     found = []
@@ -48,8 +48,8 @@ def transcribe():
 
     for segment in result["segments"]:
         if word_regex.search(segment["text"]):
-            start = max(segment["start"] - 0.1, 0)  # Beginning of the segment
-            end = segment["end"] + 0.0  # End of the segment
+            start = max(segment["start"] - 0.0, 0)  # Adjust start time
+            end = segment["end"] + 0.0  # Adjust end time
             found.append((start, end))
             print(f"🎯 Found {WORD}: {format_time(start)} --> {format_time(end)}")
 
@@ -61,33 +61,59 @@ def transcribe():
     return found
 
 
-# Cut clips
-def cut_clips(segments):
-    print("[3] Cutting clips...")
+def cut_clips_with_counter(segments):
+    print("[3] Cutting clips with counter overlay...")
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     for idx, (start, end) in enumerate(segments, 1):
-        output = os.path.join(OUTPUT_DIR, f"clip{idx:03}.mp4")
-        cmd = [
+        raw_clip = os.path.join(OUTPUT_DIR, f"raw_clip{idx:03}.mp4")
+        final_clip = os.path.join(OUTPUT_DIR, f"clip{idx:03}.mp4")
+
+        # Step 1: Cut clip
+        cmd_cut = [
             "ffmpeg", "-y", "-i", VIDEO_FILE,
             "-ss", format_time(start), "-to", format_time(end),
             "-c:v", "libx264", "-crf", "23", "-preset", "fast",
             "-c:a", "aac", "-b:a", "128k",
-            output
+            raw_clip
         ]
-        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        print(f"✂️ Clip saved: {output}")
+        subprocess.run(cmd_cut, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        FONT_PATH = "C\\:/Windows/Fonts/arial.ttf"  # Replace with your font path
+
+        cmd_overlay = [
+            "ffmpeg", "-y", "-i", raw_clip,
+            "-vf",
+            f"drawtext=fontfile='{FONT_PATH}':text='Count\\: {idx}':fontcolor=white:fontsize=44:x=10:y=10:box=1:boxcolor=black@0.5",
+            "-c:v", "libx264", "-crf", "23", "-preset", "fast",
+            "-c:a", "aac", "-b:a", "128k",
+            final_clip
+        ]
+        subprocess.run(cmd_overlay, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        os.remove(raw_clip)
+        print(f"✂️ Clip with counter saved as {final_clip}")
 
 
-# Concatenate clips
 def concatenate_clips():
     print("[4] Concatenating clips...")
 
     txt_path = "files.txt"
+    clip_paths = []
+
+    for file in sorted(os.listdir(OUTPUT_DIR)):
+        if file.endswith(".mp4"):
+            full_path = os.path.join(OUTPUT_DIR, file).replace(os.sep, "/")
+            if os.path.exists(full_path):
+                clip_paths.append(full_path)
+
+    if not clip_paths:
+        print("❌ No clips found to concatenate.")
+        return
+
     with open(txt_path, "w", encoding="utf-8") as f:
-        for file in sorted(os.listdir(OUTPUT_DIR)):
-            if file.endswith(".mp4"):
-                f.write(f"file '{os.path.join(OUTPUT_DIR, file).replace(os.sep, '/')}'\n")
+        for path in clip_paths:
+            f.write(f"file '{path}'\n")
 
     cmd = [
         "ffmpeg", "-y", "-f", "concat", "-safe", "0",
@@ -97,11 +123,14 @@ def concatenate_clips():
         FINAL_OUTPUT
     ]
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    os.remove(txt_path)
+
     if result.returncode != 0:
         print("❌ Error during concatenation:")
         print(result.stderr.decode())
     else:
-        print(f"✅ Final video created: {FINAL_OUTPUT}")
+        print(f"✅ Final video created as {FINAL_OUTPUT}")
 
 
 # === Main script ===
@@ -114,7 +143,7 @@ if __name__ == "__main__":
     segments = transcribe()
 
     if segments:
-        cut_clips(segments)
+        cut_clips_with_counter(segments)
         concatenate_clips()
     else:
-        print(f"⚠️ No segments found with {WORD}.")
+        print(f"⚠️ No segments found with word {WORD}.")
